@@ -7,6 +7,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
+# import com.google.api.services.drive.model.FileList;
 
 # If modifying these scopes, delete the file token.json.
 SCOPES = ["https://www.googleapis.com/auth/drive"]
@@ -101,23 +102,66 @@ def create_drive_folder(service, remote_root, name):
 
     file = service.files().create(body=folder_metadata, fields="id").execute()
     return file.get('id')
-   
 
-def upload(service, remote_root, local_root):
-   for root, dirs, files in os.walk(local_root):
-      for file in files:
-        print (os.path.join(root, file))
-        #  yield os.path.join(root, file)
+def recursive_local_file_scan(curr_dir, dir_stack, to_return):
+  with os.scandir(curr_dir) as d:
+    for e in d:
+      if e.is_dir():
+        dir_stack.append(e.name)
+        recursive_local_file_scan(curr_dir + os.path.sep + e.name, dir_stack, to_return)
+      elif e.is_file():
+        file_name = "".join(os.path.sep.join(dir_stack) + os.path.sep + e.name)
+        if file_name[0] != "\\":
+           file_name = "\\" + file_name
+        to_return.add(file_name)
+  
+  if len(dir_stack) <= 2:
+     return
+  dir_stack.pop()
 
-# CHECK IF DIR EXISTS, IF NOT CREATE DIR AND ALL SUBSEQUENT FILES
-   
+def recursive_remote_file_scan(service, curr_parent, dir_stack, to_return):
+  res = (
+    service.files()
+    .list(q="'"+ curr_parent + "' in parents", spaces="drive")
+  ).execute()
 
-   
-#    print(local_root)
+  for r in res.get("files"):
+    if r.get('mimeType') == "application/vnd.google-apps.folder":
+      dir_stack.append(r.get("name"))
+      recursive_remote_file_scan(service, r.get("id"), dir_stack, to_return)
+    else:
+      file_name = "".join(os.path.sep.join(dir_stack) + os.path.sep + r.get("name"))
+      if file_name[0] != "\\":
+        file_name = "\\" + file_name
+      to_return.add(file_name)
+  
+  if len(dir_stack) <= 1:
+     return
+  dir_stack.pop()
+
+def compare(service, remote_root, local_root):
+  #Will compare hashes in the future for version detection
+
+  local_files = set()
+  remote_files = set()
+
+  recursive_local_file_scan(local_root, [os.path.basename(local_root)], local_files)
+  recursive_remote_file_scan(service, remote_root, [], remote_files)
+
+  diff = set()
+  for d in (local_files - remote_files):
+    diff.add("+" + d)
+  for d in (remote_files - local_files):
+    diff.add("-" + d)
+  return diff
 
 if __name__ == "__main__":
   service = get_drive_service()
   f_id = find_storage(service)
 
   local_f = "C:\\Users\\micha\\Downloads\\SSTest"
-  upload(service, f_id, local_f)
+  difference = compare(service, f_id, local_f)
+
+  print(difference)
+
+  #Preform upload and download based on comparison
