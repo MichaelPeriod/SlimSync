@@ -7,10 +7,12 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
-# import com.google.api.services.drive.model.FileList;
 
-# If modifying these scopes, delete the file token.json.
 SCOPES = ["https://www.googleapis.com/auth/drive"]
+STORAGE_NAME = "SlimSyncStorage"
+STORAGE_ID = ""
+LOCAL_STORE = "C:\\Users\\micha\\Downloads\\SSTest"
+
 
 def get_drive_service():
   creds = None
@@ -36,12 +38,14 @@ def get_drive_service():
     # TODO Handle errors from drive API.
     print(f"An error occurred: {error}")
 
-
 def find_storage(service):
+  return find_folder(service, STORAGE_NAME, create_inf=True)
+
+def find_folder(service, name, parent="", create_inf=False):
     folderID = None
 
     file_metadata = {
-        "name": "SlimSyncStorage",
+        "name": name,
         "mimeType": "application/vnd.google-apps.folder",
     }
 
@@ -49,11 +53,17 @@ def find_storage(service):
     page_token = None
 
     dirsFound = 0
+
+    query = "mimeType='" + file_metadata["mimeType"] + "' and name = '" + file_metadata["name"] + "'"
+    # if len(parent) > 0:
+    #   query += " and '"+ str(STORAGE_ID) + "' is parent"
+    # print(query)
+    
     while True:
         response = (
         service.files()
         .list(
-            q="mimeType='" + file_metadata["mimeType"] + "' and name = '" + file_metadata["name"] + "'",
+            q=query,
             spaces="drive",
             fields="nextPageToken, files(id, name)",
             pageToken=page_token,
@@ -62,7 +72,7 @@ def find_storage(service):
         )
 
         for file in response.get("files", []):
-            print(f'Found file: {file.get("name")}, {file.get("id")}')
+            print(f'Found folder: {file.get("name")}, {file.get("id")}')
             dirsFound += 1
             folderID = file.get("id")
         files.extend(response.get("files", []))
@@ -71,19 +81,23 @@ def find_storage(service):
         if page_token is None:
           break
 
-    if dirsFound == 0:
+    if dirsFound == 0 and create_inf:
         file = service.files().create(body=file_metadata, fields="id").execute()
         print(f'Created Folder ID: "{file.get("id")}".')
         folderID = file.get("id")
     
     return folderID
 
-def upload_file(service, remote_root, local_path):
+def upload_file(service, parent_name, local_path):
+    
+    remote_root = find_folder(service, parent_name, STORAGE_NAME)
+
     file_metadata = {
         'name': os.path.basename(local_path),
         'parents': [remote_root]
     }
     
+    print(local_path)
     media = MediaFileUpload(local_path, resumable=True)
     uploaded = service.files().create(
         body=file_metadata,
@@ -148,20 +162,25 @@ def compare(service, remote_root, local_root):
   recursive_local_file_scan(local_root, [os.path.basename(local_root)], local_files)
   recursive_remote_file_scan(service, remote_root, [], remote_files)
 
-  diff = set()
+  diff = [set(), set()]
   for d in (local_files - remote_files):
-    diff.add("+" + d)
+    diff[0].add(d)
   for d in (remote_files - local_files):
-    diff.add("-" + d)
+    diff[1].add(d)
   return diff
 
 if __name__ == "__main__":
   service = get_drive_service()
-  f_id = find_storage(service)
+  STORAGE_ID = find_storage(service)
 
-  local_f = "C:\\Users\\micha\\Downloads\\SSTest"
-  difference = compare(service, f_id, local_f)
+  difference = compare(service, STORAGE_ID, LOCAL_STORE)
 
-  print(difference)
+  for d in difference[0]:
+    print(d.split("\\"))
+    file_name = d.split("\\")[-2]
+    complete_file_location = LOCAL_STORE+"\\".join(d.split("\\")[::len(d.split("\\"))-1])
+    upload_file(service, file_name, complete_file_location)
+
+  print(difference[0])
 
   #Preform upload and download based on comparison
