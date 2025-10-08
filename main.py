@@ -1,6 +1,7 @@
 import os.path
 import os
 import io
+import sys
 
 from googleapiclient.http import MediaIoBaseDownload
 from google.auth.transport.requests import Request
@@ -220,6 +221,18 @@ def recursive_remote_file_scan(service, curr_parent, dir_stack, to_return):
      return
   dir_stack.pop()
 
+def delete_remote(service, file_path):
+  file_id = find_remote_file_by_path(service, file_path)
+  response = service.files().delete(fileId=file_id).execute()
+
+  print("Deleted file at " + file_path + " on remote")
+
+def delete_local(file_path):
+  short_path = "\\".join(file_path.split("\\")[2:])
+  os.remove(LOCAL_STORE + "\\" + short_path)
+
+  print("Deleted file at " + file_path + " on local")
+
 def compare(service, remote_root, local_root):
   #Will compare hashes in the future for version detection
 
@@ -237,20 +250,43 @@ def compare(service, remote_root, local_root):
   return diff
 
 if __name__ == "__main__":
+  action = "sync"
+  if len(sys.argv) > 1:
+    action = sys.argv[1]
   service = get_drive_service()
   STORAGE_ID = find_storage(service)
 
-  difference = compare(service, STORAGE_ID, LOCAL_STORE)
+  difference = compare(service, STORAGE_ID, LOCAL_STORE) # [On local, on remote]
+  if action == "push":
+    print("Pushing to remote")
+    for path in difference[0]:
+      print(path.split("\\"))
+      parent_name = path.split("\\")[-2]
+      complete_file_location = LOCAL_STORE+"\\".join(path.split("\\")[::len(path.split("\\"))-1])
+      upload_file(service, parent_name, complete_file_location)
 
-  for d in difference[0]:
-    print(d.split("\\"))
-    parent_name = d.split("\\")[-2]
-    complete_file_location = LOCAL_STORE+"\\".join(d.split("\\")[::len(d.split("\\"))-1])
-    upload_file(service, parent_name, complete_file_location)
-  
-  for file_path in difference[1]:
-    print(file_path)
-    # find_remote_file_by_path(service, file_path)
-    download_file(service, file_path, LOCAL_STORE)
+    for file_path in difference[1]:
+      delete_remote(service, file_path)
+
+
+  elif action == "pull":
+    print("Pulling from remote")
     
-  #Preform upload and download based on comparison
+    for path in difference[0]:
+      delete_local(path)
+    
+    for file_path in difference[1]:
+      download_file(service, file_path, LOCAL_STORE)
+    
+  else:
+    print("(Syncing, additive only)")
+    for path in difference[0]:
+      print(path.split("\\"))
+      parent_name = path.split("\\")[-2]
+      complete_file_location = LOCAL_STORE+"\\".join(path.split("\\")[::len(path.split("\\"))-1])
+      upload_file(service, parent_name, complete_file_location)
+    
+    for file_path in difference[1]:
+      download_file(service, file_path, LOCAL_STORE)
+      
+    #Preform upload and download based on comparison
