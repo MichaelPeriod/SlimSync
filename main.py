@@ -1,6 +1,8 @@
 import os.path
 import os
+import io
 
+from googleapiclient.http import MediaIoBaseDownload
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -55,10 +57,7 @@ def find_folder(service, name, parent="", create_inf=False):
     dirsFound = 0
 
     query = "mimeType='" + file_metadata["mimeType"] + "' and name = '" + file_metadata["name"] + "'"
-    # if len(parent) > 0:
-    #   query += " and '"+ str(STORAGE_ID) + "' is parent"
-    # print(query)
-    
+
     while True:
         response = (
         service.files()
@@ -89,7 +88,6 @@ def find_folder(service, name, parent="", create_inf=False):
     return folderID
 
 def upload_file(service, parent_name, local_path):
-    
     remote_root = find_folder(service, parent_name, STORAGE_NAME)
 
     file_metadata = {
@@ -97,7 +95,6 @@ def upload_file(service, parent_name, local_path):
         'parents': [remote_root]
     }
     
-    print(local_path)
     media = MediaFileUpload(local_path, resumable=True)
     uploaded = service.files().create(
         body=file_metadata,
@@ -106,6 +103,76 @@ def upload_file(service, parent_name, local_path):
     ).execute()
     print(f"Uploaded {local_path} -> Drive ID: {uploaded.get('id')}")
     return uploaded.get('id')
+
+def find_remote_folder_by_path(service, path) -> str:
+  split_path = path.split("\\")
+  curr_folder_id = ""
+  search_depth = 0
+
+  if split_path[0] == STORAGE_NAME:
+    curr_folder_id = STORAGE_ID
+    search_depth = 1
+  
+  while search_depth < len(split_path):
+    curr_folder_id = find_folder(service, split_path[search_depth], parent=str(curr_folder_id))
+    search_depth += 1
+  
+  return str(curr_folder_id)
+
+def find_remote_file_by_path(service, path):
+  split_path = path.split("\\")
+  parent_path = "\\".join(split_path[:-1])
+  parent_id = find_remote_folder_by_path(service, parent_path)
+  print(str(parent_id) + " -- " + parent_path)
+
+  file_name = split_path[-1]
+  query = "name = '" + file_name + "' and '" + parent_id + "' in parents"
+
+  page_token = None
+  response = (
+  service.files()
+  .list(
+    q=query,
+    spaces="drive",
+    fields="nextPageToken, files(id, name, parents)",
+    pageToken=page_token,
+  )
+  .execute()
+  )
+
+  for file in response.get("files", []):
+    print(f'Found file: {file.get("name")}, {file.get("id")}, {file.get("parents")}')
+    return file.get("id")
+  print("NO FILE FOUND")
+  return "NO FILE FOUND"
+
+def get_file_stream(service, path):
+  try:
+    remote_file_id = find_remote_file_by_path(service, path)
+
+    request = service.files().get_media(fileId=remote_file_id)
+    file = io.BytesIO()
+    downloader = MediaIoBaseDownload(file, request)
+    done = False
+    while done is False:
+      status, done = downloader.next_chunk()
+      print(f"Download {int(status.progress() * 100)}.")
+  except HttpError as error:
+    print(f"An error occurred: {error}")
+    file = None
+
+  return file.getvalue()
+
+def download_file(service, remote_path, local_path):
+  file_stream = get_file_stream(service, remote_path)
+
+  path_dir = local_path + "\\" + "\\".join(remote_path.split("\\")[2:-1]) + "\\"
+
+  while not os.path.exists(path_dir):
+    os.makedirs(path_dir)
+
+  with open(path_dir + remote_path.split("\\")[-1], "wb") as f:
+    f.write(file_stream)
 
 def create_drive_folder(service, remote_root, name):
     folder_metadata = {
@@ -177,10 +244,13 @@ if __name__ == "__main__":
 
   for d in difference[0]:
     print(d.split("\\"))
-    file_name = d.split("\\")[-2]
+    parent_name = d.split("\\")[-2]
     complete_file_location = LOCAL_STORE+"\\".join(d.split("\\")[::len(d.split("\\"))-1])
-    upload_file(service, file_name, complete_file_location)
-
-  print(difference[0])
-
+    upload_file(service, parent_name, complete_file_location)
+  
+  for file_path in difference[1]:
+    print(file_path)
+    # find_remote_file_by_path(service, file_path)
+    download_file(service, file_path, LOCAL_STORE)
+    
   #Preform upload and download based on comparison
